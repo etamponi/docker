@@ -1,0 +1,1 @@
+cp bundles/1.12.0-dev/binary-client/docker bundles/1.12.0-dev/binary-daemon/docker-containerd bundles/1.12.0-dev/binary-daemon/docker-runc bundles/1.12.0-dev/binary-daemon/dockerd /usr/bin

@@ -1,0 +1,6 @@
+[
+    {"name":"busybox", "args": ["true"]},
+    {"name":"busybox", "args": ["sleep", "2"]},
+    {"name":"busybox", "args": ["sleep", "4"], "kill": true},
+    {"name":"busybox", "args": ["sleep", "6"], "kill": true}
+]
