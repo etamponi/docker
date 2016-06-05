@@ -79,6 +79,62 @@ func (daemon *Daemon) ContainerStart(name string, hostConfig *containertypes.Hos
 	return daemon.containerStart(container)
 }
 
+type processorMsg struct {
+	container *container.Container
+	action    string
+	cerr      chan error
+}
+
+const (
+	startAction   = "start"
+	cleanupAction = "cleanup"
+)
+
+type startAndCleanupProcessor struct {
+	daemon   *Daemon
+	cmsg     chan *processorMsg
+	Done     chan struct{}
+	Finished *sync.WaitGroup
+}
+
+func (processor *startAndCleanupProcessor) run() {
+	defer processor.Finished.Done()
+	for {
+		select {
+		case <-processor.Done:
+			return
+		case msg := <-processor.cmsg:
+			if len(processor.cmsg) >= 4086 {
+				logrus.Warnf("startAndCleanupProcessor: message channel almost full (%d/4096)", len(processor.cmsg))
+			}
+                        switch msg.action {
+			case startAction:
+				msg.cerr <- processor.daemon.processContainerStart(msg.container)
+			case cleanupAction:
+				msg.cerr <- processor.daemon.processCleanup(msg.container)
+			default:
+				logrus.Errorf("startAndCleanupProcessor: invalid action %s", msg.action)
+			}
+		}
+	}
+}
+
+func (daemon *Daemon) StartProcessor() {
+	if daemon.processor == nil {
+		daemon.processor = &startAndCleanupProcessor{
+			daemon:   daemon,
+			cmsg:     make(chan *processorMsg, 4096),
+			Done:     make(chan struct{}),
+			Finished: &sync.WaitGroup{},
+		}
+		daemon.processor.Finished.Add(1)
+		go daemon.processor.run()
+		logrus.Info("Daemon processor started")
+	} else {
+		logrus.Error("Daemon processor already started!")
+	}
+}
+
 // Start starts a container
 func (daemon *Daemon) Start(container *container.Container) error {
 	return daemon.containerStart(container)
@@ -89,6 +145,16 @@ func (daemon *Daemon) Start(container *container.Container) error {
 // between containers. The container is left waiting for a signal to
 // begin running.
 func (daemon *Daemon) containerStart(container *container.Container) (err error) {
+	msg := &processorMsg{
+		container: container,
+		action:    startAction,
+		cerr:      make(chan error),
+	}
+	daemon.processor.cmsg <- msg
+	return <- msg.cerr
+}
+
+func (daemon *Daemon) processContainerStart(container *container.Container) (err error) {
 	container.Lock()
 	defer container.Unlock()
 
@@ -110,7 +176,7 @@ func (daemon *Daemon) containerStart(container *container.Container) (err error)
 				container.ExitCode = 128
 			}
 			container.ToDisk()
-			daemon.Cleanup(container)
+			daemon.processCleanup(container)
 		}
 	}()
 
@@ -148,22 +214,25 @@ func (daemon *Daemon) containerStart(container *container.Container) (err error)
 		}
 
 		container.Reset(false)
-
 		return err
 	}
 
 	return nil
 }
 
-// The UGLIEST thing ever (and second ugliest some lines later)
-var globalCleanupLock = sync.Mutex{}
-
 // Cleanup releases any network resources allocated to the container along with any rules
 // around how containers are linked together.  It also unmounts the container's root filesystem.
 func (daemon *Daemon) Cleanup(container *container.Container) {
-	globalCleanupLock.Lock()
-	defer globalCleanupLock.Unlock()
+	msg := &processorMsg{
+		container: container,
+		action:    cleanupAction,
+		cerr:      make(chan error),
+	}
+	daemon.processor.cmsg <- msg
+	<- msg.cerr
+}
 
+func (daemon *Daemon) processCleanup(container *container.Container) error {
 	daemon.releaseNetwork(container)
 
 	container.UnmountIpcMounts(detachMounted)
@@ -186,4 +255,7 @@ func (daemon *Daemon) Cleanup(container *container.Container) {
 		}
 	}
 	container.CancelAttachContext()
+
+	return nil
 }
+

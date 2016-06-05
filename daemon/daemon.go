@@ -93,6 +93,7 @@ type Daemon struct {
 	linkIndex                 *linkIndex
 	containerd                libcontainerd.Client
 	defaultIsolation          containertypes.Isolation // Default isolation mode on Windows
+	processor                 *startAndCleanupProcessor
 }
 
 func (daemon *Daemon) restore() error {
@@ -554,6 +555,8 @@ func NewDaemon(config *Config, registryService registry.Service, containerdRemot
 		return nil, err
 	}
 
+	d.StartProcessor()
+
 	return d, nil
 }
 
@@ -631,6 +634,9 @@ func (daemon *Daemon) Shutdown() error {
 	if err := daemon.cleanupMounts(); err != nil {
 		return err
 	}
+
+	close(daemon.processor.Done)
+	daemon.processor.Finished.Wait()
 
 	return nil
 }
